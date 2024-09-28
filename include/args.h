@@ -3,12 +3,18 @@
 #define args_h
 
 
+// the order of items is important
 typedef enum {
+    // no extra args
     HELP,
     LIST,
+
+    // with queue name
+    PULL,
     SHOW,
     SIZE,
-    PULL,
+
+    // with queue name and message
     PUSH,
 } CommandTypes;
 

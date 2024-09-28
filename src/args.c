@@ -6,6 +6,31 @@
 #include "args.h"
 
 
+static CommandTypes LAST_NO_ARGS_COMMAND = LIST;
+static CommandTypes LAST_ONLY_Q_NAME_COMMAND = SIZE;
+
+
+typedef struct CommandTypeMap {
+    char *name;
+    CommandTypes command_type;
+} CommandTypeMap;
+
+
+static CommandTypeMap commands[] = {
+    {"help", HELP},
+    {"list", LIST},
+
+    {"pull", PULL},
+    {"show", SHOW},
+    {"size", SIZE},
+
+    {"push", PUSH},
+};
+
+
+# define COMMANDS_SIZE (sizeof(commands) / sizeof(CommandTypeMap))
+
+
 InputArgs *get_empty_command_args() {
     InputArgs *args = malloc(sizeof(InputArgs));
 
@@ -48,18 +73,13 @@ void print_help(char *name, char *version) {
 }
 
 
-u_int8_t _parse_command(char *command) {
-    u_int8_t answer = HELP;
-    if (strcmp(command, "list") == 0) {
-        answer = LIST;
-    } else if (strcmp(command, "show") == 0) {
-        answer = SHOW;
-    } else if (strcmp(command, "size") == 0) {
-        answer = SIZE;
-    } else if (strcmp(command, "pull") == 0) {
-        answer = PULL;
-    } else if (strcmp(command, "push") == 0) {
-        answer = PUSH;
+CommandTypes _parse_command(char *command) {
+    CommandTypes answer = HELP;
+    for (u_int8_t i = 0; i < COMMANDS_SIZE; i++) {
+        if (strcmp(command, commands[i].name) == 0) {
+            answer = commands[i].command_type;
+            break;
+        }
     }
     return answer;
 }
@@ -144,7 +164,7 @@ int parse_args(InputArgs *input_args, int argc, char *argv[]) {
 
     input_args->command = _parse_command(argv[1]);
 
-    if (input_args->command <= LIST) {
+    if (input_args->command <= LAST_NO_ARGS_COMMAND) {
         return EXIT_SUCCESS;
     }
 
@@ -152,7 +172,7 @@ int parse_args(InputArgs *input_args, int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
-    if (input_args->command < PUSH) {
+    if (input_args->command <= LAST_ONLY_Q_NAME_COMMAND) {
         return EXIT_SUCCESS;
     }
 
