@@ -9,7 +9,7 @@
 
 
 u_int8_t major = 0;
-u_int8_t minor = 1;
+u_int8_t minor = 2;
 u_int8_t patch = 0;
 
 
