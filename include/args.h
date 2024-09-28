@@ -10,6 +10,8 @@ typedef enum {
     LIST,
 
     // with queue name
+    CLEAR,
+    DEL,
     PULL,
     SHOW,
     SIZE,

@@ -244,6 +244,20 @@ int print_size_of_queue(char *q_name) {
 }
 
 
+int remove_queue(char *q_name) {
+    char *path = get_q_path(q_name);
+    int exit_code = 0;
+
+    if (remove(path) != 0) {
+        printf("failed to delete queue `%s`\n", q_name);
+        exit_code = EXIT_FAILURE;
+    }
+    free(path);
+
+    return exit_code;
+}
+
+
 int print_all_messages_from_queue(char *q_name) {
     Queue *queue = open_q(q_name, "rb");
 

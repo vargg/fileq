@@ -20,6 +20,8 @@ static CommandTypeMap commands[] = {
     {"help", HELP},
     {"list", LIST},
 
+    {"clear", CLEAR},
+    {"del", DEL},
     {"pull", PULL},
     {"show", SHOW},
     {"size", SIZE},
@@ -61,6 +63,10 @@ void print_help(char *name, char *version) {
     printf("        show this message and exit\n");
     printf("    list\n");
     printf("        show the names of available queues\n");
+    printf("    clear -q <queue_name>\n");
+    printf("        delete all messages from the specified queue\n");
+    printf("    del -q <queue_name>\n");
+    printf("        delete the specified queue completely\n");
     printf("    show -q <queue_name>\n");
     printf("        show content (all messages) of the queue\n");
     printf("        messages will not be removed from the queue\n");
