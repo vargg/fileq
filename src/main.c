@@ -13,7 +13,7 @@ u_int8_t minor = 2;
 u_int8_t patch = 0;
 
 
-char *get_current_varsion() {
+char *get_current_version() {
     char *version = malloc(sizeof(char) * 12);
     sprintf(version, "%d.%d.%d", major, minor, patch);
     return version;
@@ -35,7 +35,7 @@ int main(int argc, char *argv[]) {
     }
 
     if (args->command == HELP) {
-        char *version = get_current_varsion();
+        char *version = get_current_version();
         print_help(argv[0], version);
         free(version);
     } else if (args->command == LIST) {
