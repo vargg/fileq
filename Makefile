@@ -5,7 +5,7 @@ INC_DIR=include
 BUILD_DIR=build
 TARGET=$(BUILD_DIR)/fq
 
-CFLAGS=-I$(INC_DIR) -Wall
+CFLAGS=-I$(INC_DIR) -Wall -MMD -MP
 LDFLAGS=
 
 OBJ=$(SRC:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
@@ -30,3 +30,5 @@ clean:
 install: $(TARGET)
 	mkdir -p ~/.local/bin
 	cp $(TARGET) ~/.local/bin/fq
+
+-include $(OBJ:.o=.d)
