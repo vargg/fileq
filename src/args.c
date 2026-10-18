@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -50,6 +51,7 @@ InputArgs *get_empty_command_args() {
 
 void destroy_command_args_obj(InputArgs *args) {
     free(args->q_name);
+    free(args->message);
     free(args);
 }
 
@@ -79,15 +81,30 @@ void print_help(char *name, char *version) {
 }
 
 
-CommandTypes _parse_command(char *command) {
-    CommandTypes answer = HELP;
+int _parse_command(char *command, CommandTypes *answer) {
     for (u_int8_t i = 0; i < COMMANDS_SIZE; i++) {
         if (strcmp(command, commands[i].name) == 0) {
-            answer = commands[i].command_type;
-            break;
+            *answer = commands[i].command_type;
+            return EXIT_SUCCESS;
         }
     }
-    return answer;
+    return EXIT_FAILURE;
+}
+
+
+// allowed: [A-Za-z0-9._-], not empty and not starting with '.'
+static int _is_valid_q_name(const char *name) {
+    if (name[0] == '\0' || name[0] == '.') {
+        return 0;
+    }
+
+    for (const char *c = name; *c != '\0'; c++) {
+        if (!isalnum((unsigned char) *c) && *c != '.' && *c != '_' && *c != '-') {
+            return 0;
+        }
+    }
+
+    return 1;
 }
 
 
@@ -125,7 +142,13 @@ u_int8_t _parse_queue_name(InputArgs *input_args, int argc, char *argv[]) {
     }
 
     input_args->q_name = malloc(q_name_len + 1);
-    strncat(input_args->q_name, q_arg + prefix_size, q_name_len);
+    memcpy(input_args->q_name, q_arg + prefix_size, q_name_len);
+    input_args->q_name[q_name_len] = '\0';
+
+    if (!_is_valid_q_name(input_args->q_name)) {
+        printf("ERROR: invalid queue name\n");
+        return EXIT_FAILURE;
+    }
 
     return EXIT_SUCCESS;
 }
@@ -144,19 +167,23 @@ u_int8_t _parse_message(
 
     u_int64_t message_size = strlen(argv[message_start_index]);
 
-    for (u_int32_t i = message_start_index + 1; i < argc; i++) {
+    for (int i = message_start_index + 1; i < argc; i++) {
         message_size += strlen(argv[i]) + 1;  // +1 for space between messages
     }
 
     input_args->message = malloc(message_size + 1);
 
-    for (u_int32_t i = message_start_index; i < argc; i++) {
-        strcat(input_args->message, argv[i]);
+    u_int64_t offset = 0;
+    for (int i = message_start_index; i < argc; i++) {
+        size_t part_len = strlen(argv[i]);
+        memcpy(input_args->message + offset, argv[i], part_len);
+        offset += part_len;
 
         if (i < argc - 1) {
-            strcat(input_args->message, " ");
+            input_args->message[offset++] = ' ';
         }
     }
+    input_args->message[offset] = '\0';
 
     return EXIT_SUCCESS;
 }
@@ -168,7 +195,10 @@ int parse_args(InputArgs *input_args, int argc, char *argv[]) {
         return EXIT_SUCCESS;
     }
 
-    input_args->command = _parse_command(argv[1]);
+    if (_parse_command(argv[1], &input_args->command) == EXIT_FAILURE) {
+        printf("ERROR: unknown command `%s`\n", argv[1]);
+        return EXIT_FAILURE;
+    }
 
     if (input_args->command <= LAST_NO_ARGS_COMMAND) {
         return EXIT_SUCCESS;
