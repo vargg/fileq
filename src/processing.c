@@ -279,6 +279,33 @@ void destroy_q_obj(Queue *queue) {
 }
 
 
+// messages are stored one per line, so '\n' inside a message is written as
+// the two bytes `\n` and a literal backslash as `\\`
+static void _write_escaped(FILE *file, const char *message) {
+    for (const char *c = message; *c != '\0'; c++) {
+        if (*c == '\\') {
+            fputs("\\\\", file);
+        } else if (*c == '\n') {
+            fputs("\\n", file);
+        } else {
+            fputc(*c, file);
+        }
+    }
+}
+
+// reverse of _write_escaped; unknown escapes are printed as is
+static void _print_unescaped(const char *line, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        if (line[i] == '\\' && i + 1 < len && (line[i + 1] == '\\' || line[i + 1] == 'n')) {
+            putchar(line[i + 1] == 'n' ? '\n' : '\\');
+            i++;
+        } else {
+            putchar(line[i]);
+        }
+    }
+}
+
+
 // HANDLERS
 
 void print_available_queues() {
@@ -367,12 +394,14 @@ int print_all_messages_from_queue(char *q_name) {
         return EXIT_FAILURE;
     }
 
-    char *message = malloc(batch_size);
-    while (fgets(message, batch_size, queue->file) != NULL) {
-        printf("%s", message);
+    char *line = NULL;
+    size_t capacity = 0;
+    ssize_t line_len;
+    while ((line_len = getline(&line, &capacity, queue->file)) > 0) {
+        _print_unescaped(line, line_len);
     }
 
-    free(message);
+    free(line);
 
     destroy_q_obj(queue);
     return EXIT_SUCCESS;
@@ -398,21 +427,21 @@ int pull_message_from_queue(char *q_name) {
         return EXIT_FAILURE;
     }
 
-    char *message = malloc(batch_size);
+    char *line = NULL;
+    size_t capacity = 0;
+    ssize_t line_len = getline(&line, &capacity, queue->file);
 
-    int shift = 0;
-    while (1) {
-        fgets(message, batch_size, queue->file);
-        printf("%s", message);
-        shift += strlen(message);
-        if (message[strlen(message) - 1] == '\n') {
-            break;
-        }
+    if (line_len <= 0 || line[line_len - 1] != '\n') {
+        printf("queue `%s` is broken\n", q_name);
+        free(line);
+        destroy_q_obj(queue);
+        return EXIT_FAILURE;
     }
 
-    free(message);
+    _print_unescaped(line, line_len);
+    free(line);
 
-    queue->metadata->head += shift;
+    queue->metadata->head += line_len;
     queue->metadata->skipped++;
     queue->metadata->size--;
 
@@ -441,8 +470,8 @@ int push_message_into_queue(char *q_name, char *message) {
         return EXIT_FAILURE;
     }
 
-    fputs(message, queue->file);
-    fputs("\n", queue->file);
+    _write_escaped(queue->file, message);
+    fputc('\n', queue->file);
 
     queue->metadata->size++;
 
