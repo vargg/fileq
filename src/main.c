@@ -40,10 +40,7 @@ int main(int argc, char *argv[]) {
     } else if (args->command == LIST) {
         print_available_queues();
     } else if (args->command == CLEAR) {
-        exit_code = remove_queue(args->q_name);
-        if (exit_code == EXIT_SUCCESS) {
-            exit_code = make_q(args->q_name);
-        }
+        exit_code = clear_queue(args->q_name);
     } else if (args->command == DEL) {
         exit_code = remove_queue(args->q_name);
     } else if (args->command == SIZE) {

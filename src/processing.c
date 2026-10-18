@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -81,9 +82,16 @@ char *get_q_path(char *q_name) {
 int check_or_make_dir(char *path) {
     struct stat st = {0};
 
-    if (stat(path, &st) == -1 && mkdir(path, 0700) != 0) {
-        perror(path);
-        return EXIT_FAILURE;
+    // EEXIST is fine as long as it is a directory: another process may have
+    // created it concurrently
+    if (mkdir(path, 0700) != 0) {
+        if (errno != EEXIST || stat(path, &st) != 0 || !S_ISDIR(st.st_mode)) {
+            if (errno == EEXIST) {
+                errno = ENOTDIR;
+            }
+            perror(path);
+            return EXIT_FAILURE;
+        }
     }
 
     return EXIT_SUCCESS;
@@ -183,24 +191,30 @@ FileMetadata *read_metadata(FILE *file) {
 int make_q(char *name) {
     char *path = get_q_path(name);
 
-    // O_EXCL makes creation atomic: if another process created the queue
-    // first, its header (and any pushed messages) are left untouched
-    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0600);
-    if (fd == -1) {
-        int code = EXIT_SUCCESS;
-        if (errno != EEXIST) {
-            perror(path);
-            code = EXIT_FAILURE;
-        }
+    if (access(path, F_OK) == 0) {
         free(path);
-        return code;
+        return EXIT_SUCCESS;
     }
-    free(path);
 
-    FILE *file = fdopen(fd, "wb");
+    // build the queue under a temporary name, then link it into place:
+    // link() is atomic and fails if the queue already exists, so a queue
+    // created concurrently is never overwritten and no process ever sees a
+    // file without a header. Temporary names start with '.', which valid
+    // queue names cannot.
+    char *tmp_name = malloc(strlen(name) + 24);
+    snprintf(tmp_name, strlen(name) + 24, ".%s.%d", name, (int) getpid());
+    char *tmp_path = get_q_path(tmp_name);
+    free(tmp_name);
+
+    int fd = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    FILE *file = (fd == -1) ? NULL : fdopen(fd, "wb");
     if (file == NULL) {
-        perror("fdopen");
-        close(fd);
+        perror(tmp_path);
+        if (fd != -1) {
+            close(fd);
+        }
+        free(tmp_path);
+        free(path);
         return EXIT_FAILURE;
     }
 
@@ -211,10 +225,21 @@ int make_q(char *name) {
         code = EXIT_FAILURE;
     }
 
+    if (code == EXIT_SUCCESS && link(tmp_path, path) != 0 && errno != EEXIST) {
+        perror(path);
+        code = EXIT_FAILURE;
+    }
+
+    unlink(tmp_path);
+    free(tmp_path);
+    free(path);
+
     return code;
 }
 
 
+// "rb" opens take a shared lock, "rb+" opens an exclusive one; the lock is
+// held until destroy_q_obj() closes the file
 Queue *open_q(char *name, char *mode) {
     char *path = get_q_path(name);
 
@@ -223,6 +248,13 @@ Queue *open_q(char *name, char *mode) {
 
     if (file == NULL) {
         printf("queue `%s` does not exist\n", name);
+        return NULL;
+    }
+
+    int lock = (strchr(mode, '+') != NULL) ? LOCK_EX : LOCK_SH;
+    if (flock(fileno(file), lock) != 0) {
+        perror("flock");
+        fclose(file);
         return NULL;
     }
 
@@ -257,7 +289,8 @@ void print_available_queues() {
     free(qs_dir);
     if (dir) {
         while ((d = readdir(dir)) != NULL) {
-            if(d->d_type == DT_REG){
+            // names starting with '.' are make_q's temporary files
+            if (d->d_type == DT_REG && d->d_name[0] != '.') {
                 printf("%s\n", d->d_name);
             }
         }
@@ -292,6 +325,32 @@ int remove_queue(char *q_name) {
     free(path);
 
     return exit_code;
+}
+
+
+// truncate in place under the exclusive lock, so concurrent pushes are
+// either fully before or fully after the clear
+int clear_queue(char *q_name) {
+    Queue *queue = open_q(q_name, "rb+");
+
+    if (queue == NULL) {
+        return EXIT_FAILURE;
+    }
+
+    int code = EXIT_SUCCESS;
+    if (ftruncate(fileno(queue->file), metadata_size) != 0) {
+        perror("ftruncate");
+        code = EXIT_FAILURE;
+    } else {
+        queue->metadata->head = metadata_size;
+        queue->metadata->skipped = 0;
+        queue->metadata->size = 0;
+        code = write_metadata(queue->file, queue->metadata);
+    }
+
+    destroy_q_obj(queue);
+
+    return code;
 }
 
 
