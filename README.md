@@ -10,6 +10,8 @@ $ make
 $ make install
 ```
 
+Run the tests with `make test`.
+
 ## Usage
 
 ```bash

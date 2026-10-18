@@ -12,9 +12,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 make            # builds build/fq (gcc, -Wall, objects + .d header deps in build/)
 make clean      # removes build/
 make install    # copies build/fq to ~/.local/bin/fq
+make test       # unit tests (ASan/UBSan build) + CLI checks
 ```
 
-There is no test suite or linter. A sanitizer build catches most memory bugs: `make -B BUILD_DIR=/tmp/fqb CFLAGS="-Iinclude -Wall -Wextra -g -fsanitize=address,undefined" LDFLAGS="-fsanitize=address,undefined"`. Pass `-Iinclude` yourself, because overriding `CFLAGS` drops the Makefile's flags. To check a change, build and run the binary directly, e.g. `./build/fq push -q test hello world && ./build/fq pull -q test`. Running it creates real queues under `~/.fileq/qs/`, so delete test queues afterwards with `./build/fq del -q test`.
+There is no linter.
+
+## Tests
+
+- **What `make test` runs:** `build/tests/test_args` and `build/tests/test_processing`, then `tests/cli.sh build/fq`.
+- **One test at a time:** pass its name, e.g. `./build/tests/test_processing trim_keeps_order`. An unknown name exits 1.
+- **The harness:** `tests/test.h` provides `TEST`/`RUN`/`CHECK*` and the helpers. Each unit test file `#include`s the `.c` it tests (never `main.c`), so `static` helpers like `_write_escaped` can be tested directly. New tests go in the matching file and need a `RUN(name)` line in its `main`.
+- **Output and isolation:** handlers report through `printf`, so tests wrap calls in `capture_begin()`/`capture_end()`. Processing tests call `fresh_home()`, which points `HOME` at a new `mkdtemp` dir, so they never touch the real `~/.fileq`.
+- **CLI checks:** `tests/cli.sh` covers what needs the real `main()`: exit codes, and the `help` version matching the README badge.
+- **Concurrency:** `concurrent_push_pull` forks workers that push and pull on one queue. Removing the `flock` in `open_q` makes it fail. Each worker has a 30 s `alarm`, so a hang fails the test instead of blocking it.
+- **Stale builds:** the macOS `make` only compares timestamps to the second. If you edit a source and rebuild within the same second, nothing gets rebuilt, so use `make -B` when that matters.
+
+To try a change by hand, run the binary with a throwaway home, e.g. `HOME=$(mktemp -d) ./build/fq push -q test hi`.
 
 ## Architecture
 
@@ -35,5 +48,3 @@ How each operation uses the file:
 - `push` appends a line at EOF and increments `size`. It creates the queue first if needed: `make_q` writes the header to a temporary `.<name>.<pid>` file and `link()`s it into place, so a queue file never exists without a header. `list` skips dot-files.
 - `pull` reads the line at `head` with `getline`, moves `head` forward, and increments `skipped`. It does not shrink the file. Once `skipped > max_num_of_skipped_items` (16), `_trim` shifts the remaining body back to just after the header and truncates the file. `_trim` copies raw bytes in `batch_size` (64) chunks.
 - `clear` truncates the file to the header in place, under the lock. `del` unlinks it.
-
-To exercise locking, run several `fq push`/`fq pull` loops in parallel against one queue, then check that `size` and `show | wc -l` match what was pushed.
