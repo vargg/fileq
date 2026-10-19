@@ -1,5 +1,5 @@
 # fileq
-![version](https://img.shields.io/badge/version-0.2.0-brightgreen)
+![version](https://img.shields.io/badge/version-0.2.1-brightgreen)
 
 A simple utility that organizes a FIFO queue for simple text messages via a file.
 
@@ -9,6 +9,8 @@ A simple utility that organizes a FIFO queue for simple text messages via a file
 $ make
 $ make install
 ```
+
+Run the tests with `make test`.
 
 ## Usage
 
@@ -26,3 +28,6 @@ Commands:
 - `del -q <queue_name>`                 delete the specified queue completely
 - `pull -q <queue_name>`                get the first (oldest) message from the queue
 - `push -q <queue_name> <message>`      add a new message to the queue
+
+Queue names may contain letters, digits, `.`, `_` and `-`, and must not start with `.`.
+Messages may span several lines. Several `fq` processes can safely use the same queue at once.

@@ -10,13 +10,11 @@
 
 u_int8_t major = 0;
 u_int8_t minor = 2;
-u_int8_t patch = 0;
+u_int8_t patch = 1;
 
 
-char *get_current_version() {
-    char *version = malloc(sizeof(char) * 12);
-    sprintf(version, "%d.%d.%d", major, minor, patch);
-    return version;
+void get_current_version(char *version, size_t size) {
+    snprintf(version, size, "%d.%d.%d", major, minor, patch);
 }
 
 
@@ -31,20 +29,18 @@ int main(int argc, char *argv[]) {
     exit_code = parse_args(args, argc, argv);
 
     if (exit_code != EXIT_SUCCESS) {
+        destroy_command_args_obj(args);
         return exit_code;
     }
 
     if (args->command == HELP) {
-        char *version = get_current_version();
+        char version[16];
+        get_current_version(version, sizeof(version));
         print_help(argv[0], version);
-        free(version);
     } else if (args->command == LIST) {
         print_available_queues();
     } else if (args->command == CLEAR) {
-        exit_code = remove_queue(args->q_name);
-        if (exit_code == EXIT_SUCCESS) {
-            exit_code = make_q(args->q_name);
-        }
+        exit_code = clear_queue(args->q_name);
     } else if (args->command == DEL) {
         exit_code = remove_queue(args->q_name);
     } else if (args->command == SIZE) {
@@ -60,7 +56,7 @@ int main(int argc, char *argv[]) {
         }
     } else {
         printf("Unknown command\n");
-        return EXIT_FAILURE;
+        exit_code = EXIT_FAILURE;
     }
 
     destroy_command_args_obj(args);

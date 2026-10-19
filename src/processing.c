@@ -1,10 +1,16 @@
 #include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+
+#include "processing.h"
 
 
 const char *work_dir_name = ".fileq";
@@ -29,8 +35,13 @@ typedef struct {
 
 // HELPERS
 
+// make_dirs() runs first and fails when HOME is unset, so the other path
+// helpers can rely on it being present
 char *get_work_dir_path() {
     char *home_dir = getenv("HOME");
+    if (home_dir == NULL) {
+        return NULL;
+    }
 
     char *full_dir_path = malloc(strlen(home_dir) + strlen(work_dir_name) + 2);
     strcpy(full_dir_path, home_dir);
@@ -71,20 +82,36 @@ char *get_q_path(char *q_name) {
 int check_or_make_dir(char *path) {
     struct stat st = {0};
 
-    int code = EXIT_SUCCESS;
-    if (stat(path, &st) == -1) {
-        code = mkdir(path, 0700);
+    // EEXIST is fine as long as it is a directory: another process may have
+    // created it concurrently
+    if (mkdir(path, 0700) != 0) {
+        if (errno != EEXIST || stat(path, &st) != 0 || !S_ISDIR(st.st_mode)) {
+            if (errno == EEXIST) {
+                errno = ENOTDIR;
+            }
+            perror(path);
+            return EXIT_FAILURE;
+        }
     }
 
-    return code;
+    return EXIT_SUCCESS;
 }
 
 
 int make_dirs() {
-    int code = check_or_make_dir(get_work_dir_path());
+    char *work_dir = get_work_dir_path();
+    if (work_dir == NULL) {
+        printf("HOME is not set\n");
+        return EXIT_FAILURE;
+    }
+
+    int code = check_or_make_dir(work_dir);
+    free(work_dir);
 
     if (code == EXIT_SUCCESS) {
-        code = check_or_make_dir(get_qs_dir_path());
+        char *qs_dir = get_qs_dir_path();
+        code = check_or_make_dir(qs_dir);
+        free(qs_dir);
     }
 
     return code;
@@ -169,17 +196,50 @@ int make_q(char *name) {
         return EXIT_SUCCESS;
     }
 
-    FILE *file = fopen(path, "wb");
+    // build the queue under a temporary name, then link it into place:
+    // link() is atomic and fails if the queue already exists, so a queue
+    // created concurrently is never overwritten and no process ever sees a
+    // file without a header. Temporary names start with '.', which valid
+    // queue names cannot.
+    char *tmp_name = malloc(strlen(name) + 24);
+    snprintf(tmp_name, strlen(name) + 24, ".%s.%d", name, (int) getpid());
+    char *tmp_path = get_q_path(tmp_name);
+    free(tmp_name);
+
+    int fd = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    FILE *file = (fd == -1) ? NULL : fdopen(fd, "wb");
+    if (file == NULL) {
+        perror(tmp_path);
+        if (fd != -1) {
+            close(fd);
+        }
+        free(tmp_path);
+        free(path);
+        return EXIT_FAILURE;
+    }
+
     FileMetadata metadata = {.head = metadata_size, .skipped = 0, .size = 0};
     int code = write_metadata(file, &metadata);
 
-    fclose(file);
+    if (fclose(file) != 0) {
+        code = EXIT_FAILURE;
+    }
+
+    if (code == EXIT_SUCCESS && link(tmp_path, path) != 0 && errno != EEXIST) {
+        perror(path);
+        code = EXIT_FAILURE;
+    }
+
+    unlink(tmp_path);
+    free(tmp_path);
     free(path);
 
     return code;
 }
 
 
+// "rb" opens take a shared lock, "rb+" opens an exclusive one; the lock is
+// held until destroy_q_obj() closes the file
 Queue *open_q(char *name, char *mode) {
     char *path = get_q_path(name);
 
@@ -188,6 +248,13 @@ Queue *open_q(char *name, char *mode) {
 
     if (file == NULL) {
         printf("queue `%s` does not exist\n", name);
+        return NULL;
+    }
+
+    int lock = (strchr(mode, '+') != NULL) ? LOCK_EX : LOCK_SH;
+    if (flock(fileno(file), lock) != 0) {
+        perror("flock");
+        fclose(file);
         return NULL;
     }
 
@@ -212,15 +279,45 @@ void destroy_q_obj(Queue *queue) {
 }
 
 
+// messages are stored one per line, so '\n' inside a message is written as
+// the two bytes `\n` and a literal backslash as `\\`
+static void _write_escaped(FILE *file, const char *message) {
+    for (const char *c = message; *c != '\0'; c++) {
+        if (*c == '\\') {
+            fputs("\\\\", file);
+        } else if (*c == '\n') {
+            fputs("\\n", file);
+        } else {
+            fputc(*c, file);
+        }
+    }
+}
+
+// reverse of _write_escaped; unknown escapes are printed as is
+static void _print_unescaped(const char *line, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        if (line[i] == '\\' && i + 1 < len && (line[i + 1] == '\\' || line[i + 1] == 'n')) {
+            putchar(line[i + 1] == 'n' ? '\n' : '\\');
+            i++;
+        } else {
+            putchar(line[i]);
+        }
+    }
+}
+
+
 // HANDLERS
 
 void print_available_queues() {
     struct dirent *d;
 
-    DIR *dir = opendir(get_qs_dir_path());
+    char *qs_dir = get_qs_dir_path();
+    DIR *dir = opendir(qs_dir);
+    free(qs_dir);
     if (dir) {
         while ((d = readdir(dir)) != NULL) {
-            if(d->d_type == DT_REG){
+            // names starting with '.' are make_q's temporary files
+            if (d->d_type == DT_REG && d->d_name[0] != '.') {
                 printf("%s\n", d->d_name);
             }
         }
@@ -236,7 +333,7 @@ int print_size_of_queue(char *q_name) {
         return EXIT_FAILURE;
     }
 
-    printf("%lu\n", queue->metadata->size);
+    printf("%" PRIu64 "\n", queue->metadata->size);
 
     destroy_q_obj(queue);
 
@@ -258,6 +355,32 @@ int remove_queue(char *q_name) {
 }
 
 
+// truncate in place under the exclusive lock, so concurrent pushes are
+// either fully before or fully after the clear
+int clear_queue(char *q_name) {
+    Queue *queue = open_q(q_name, "rb+");
+
+    if (queue == NULL) {
+        return EXIT_FAILURE;
+    }
+
+    int code = EXIT_SUCCESS;
+    if (ftruncate(fileno(queue->file), metadata_size) != 0) {
+        perror("ftruncate");
+        code = EXIT_FAILURE;
+    } else {
+        queue->metadata->head = metadata_size;
+        queue->metadata->skipped = 0;
+        queue->metadata->size = 0;
+        code = write_metadata(queue->file, queue->metadata);
+    }
+
+    destroy_q_obj(queue);
+
+    return code;
+}
+
+
 int print_all_messages_from_queue(char *q_name) {
     Queue *queue = open_q(q_name, "rb");
 
@@ -265,17 +388,20 @@ int print_all_messages_from_queue(char *q_name) {
         return EXIT_FAILURE;
     }
 
-    char *message = malloc(batch_size);
     if (fseek(queue->file, queue->metadata->head, SEEK_SET) != 0) {
         printf("failed to seek\n");
+        destroy_q_obj(queue);
         return EXIT_FAILURE;
     }
 
-    while (fgets(message, batch_size, queue->file) != NULL) {
-        printf("%s", message);
+    char *line = NULL;
+    size_t capacity = 0;
+    ssize_t line_len;
+    while ((line_len = getline(&line, &capacity, queue->file)) > 0) {
+        _print_unescaped(line, line_len);
     }
 
-    free(message);
+    free(line);
 
     destroy_q_obj(queue);
     return EXIT_SUCCESS;
@@ -291,28 +417,31 @@ int pull_message_from_queue(char *q_name) {
 
     if (queue->metadata->size == 0) {
         printf("queue `%s` is empty\n", q_name);
+        destroy_q_obj(queue);
         return EXIT_FAILURE;
     }
 
-    char *message = malloc(batch_size);
     if (fseek(queue->file, queue->metadata->head, SEEK_SET) != 0) {
         printf("failed to seek\n");
+        destroy_q_obj(queue);
         return EXIT_FAILURE;
     }
 
-    int shift = 0;
-    while (1) {
-        fgets(message, batch_size, queue->file);
-        printf("%s", message);
-        shift += strlen(message);
-        if (message[strlen(message) - 1] == '\n') {
-            break;
-        }
+    char *line = NULL;
+    size_t capacity = 0;
+    ssize_t line_len = getline(&line, &capacity, queue->file);
+
+    if (line_len <= 0 || line[line_len - 1] != '\n') {
+        printf("queue `%s` is broken\n", q_name);
+        free(line);
+        destroy_q_obj(queue);
+        return EXIT_FAILURE;
     }
 
-    free(message);
+    _print_unescaped(line, line_len);
+    free(line);
 
-    queue->metadata->head += shift;
+    queue->metadata->head += line_len;
     queue->metadata->skipped++;
     queue->metadata->size--;
 
@@ -337,11 +466,12 @@ int push_message_into_queue(char *q_name, char *message) {
 
     if (fseek(queue->file, 0, SEEK_END) != 0) {
         printf("failed to seek\n");
+        destroy_q_obj(queue);
         return EXIT_FAILURE;
     }
 
-    fputs(message, queue->file);
-    fputs("\n", queue->file);
+    _write_escaped(queue->file, message);
+    fputc('\n', queue->file);
 
     queue->metadata->size++;
 
